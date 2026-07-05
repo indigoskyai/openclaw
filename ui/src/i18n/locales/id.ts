@@ -445,6 +445,7 @@ export const id: TranslationMap = {
     collapse: "Ciutkan bilah samping",
     resize: "Ubah ukuran bilah samping",
     more: "More",
+    chats: "Chats",
     customize: "Customize sidebar",
     customizeReset: "Reset to defaults",
   },

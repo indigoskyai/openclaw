@@ -445,6 +445,7 @@ export const hi: TranslationMap = {
     collapse: "साइडबार समेटें",
     resize: "साइडबार का आकार बदलें",
     more: "More",
+    chats: "Chats",
     customize: "Customize sidebar",
     customizeReset: "Reset to defaults",
   },

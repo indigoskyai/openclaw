@@ -448,6 +448,7 @@ export const fr: TranslationMap = {
     collapse: "Réduire la barre latérale",
     resize: "Redimensionner la barre latérale",
     more: "More",
+    chats: "Chats",
     customize: "Customize sidebar",
     customizeReset: "Reset to defaults",
   },

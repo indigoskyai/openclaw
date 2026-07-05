@@ -449,6 +449,7 @@ export const ja_JP: TranslationMap = {
     collapse: "サイドバーを折りたたむ",
     resize: "サイドバーのサイズを変更",
     more: "More",
+    chats: "Chats",
     customize: "Customize sidebar",
     customizeReset: "Reset to defaults",
   },

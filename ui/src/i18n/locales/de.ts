@@ -448,6 +448,7 @@ export const de: TranslationMap = {
     collapse: "Seitenleiste einklappen",
     resize: "Seitenleiste in der Größe ändern",
     more: "More",
+    chats: "Chats",
     customize: "Customize sidebar",
     customizeReset: "Reset to defaults",
   },

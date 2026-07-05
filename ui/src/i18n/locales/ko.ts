@@ -444,6 +444,7 @@ export const ko: TranslationMap = {
     collapse: "사이드바 접기",
     resize: "사이드바 크기 조절",
     more: "More",
+    chats: "Chats",
     customize: "Customize sidebar",
     customizeReset: "Reset to defaults",
   },

@@ -444,6 +444,7 @@ export const ar: TranslationMap = {
     collapse: "طي الشريط الجانبي",
     resize: "تغيير حجم الشريط الجانبي",
     more: "More",
+    chats: "Chats",
     customize: "Customize sidebar",
     customizeReset: "Reset to defaults",
   },

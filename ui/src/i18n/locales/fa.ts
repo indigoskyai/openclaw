@@ -446,6 +446,7 @@ export const fa: TranslationMap = {
     collapse: "جمع کردن نوار کناری",
     resize: "تغییر اندازه نوار کناری",
     more: "More",
+    chats: "Chats",
     customize: "Customize sidebar",
     customizeReset: "Reset to defaults",
   },

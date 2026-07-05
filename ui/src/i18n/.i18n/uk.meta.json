@@ -1,11 +1,13 @@
 {
-  "fallbackKeys": [],
-  "generatedAt": "2026-07-05T16:43:18.684Z",
+  "fallbackKeys": [
+    "nav.chats"
+  ],
+  "generatedAt": "2026-07-05T16:58:15.856Z",
   "locale": "uk",
   "model": "claude-opus-4-8",
   "provider": "anthropic",
-  "sourceHash": "2d59ad7d5a488b47835d138e37ba973c72799c9d4e90a84392d584c1270cd8d3",
-  "totalKeys": 1490,
+  "sourceHash": "a573b62c62ab7b66f7faf2ba613182d5477eec4f4536339abaf8405c4ce8cfc6",
+  "totalKeys": 1491,
   "translatedKeys": 1490,
   "workflow": 1
 }
