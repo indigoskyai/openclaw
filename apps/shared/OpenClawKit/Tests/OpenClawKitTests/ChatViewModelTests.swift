@@ -4049,6 +4049,44 @@ struct ChatViewModelTests {
         #expect(await transport.lastSentRunId() == nil)
     }
 
+    @Test func `new trigger keeps selected global agent scope`() async throws {
+        let (transport, vm) = await makeViewModel(
+            sessionKey: "global",
+            activeAgentId: "reviewer",
+            historyResponses: [historyPayload(sessionKey: "global"), historyPayload()])
+        try await loadAndWaitBootstrap(vm: vm)
+
+        await MainActor.run {
+            vm.input = "/new"
+            vm.send()
+        }
+
+        try await waitUntil("fresh selected-agent session created") {
+            await MainActor.run { vm.sessionKey.hasPrefix("agent:reviewer:ios-") }
+        }
+        #expect(await transport.createdSessionKeys().first?.hasPrefix("agent:reviewer:ios-") == true)
+        #expect(await transport.createdParentSessionKeys() == ["global"])
+    }
+
+    @Test func `new trigger prefers explicit session agent over ambient agent`() async throws {
+        let (transport, vm) = await makeViewModel(
+            sessionKey: "agent:alice:main",
+            activeAgentId: "main",
+            historyResponses: [historyPayload(sessionKey: "agent:alice:main"), historyPayload()])
+        try await loadAndWaitBootstrap(vm: vm)
+
+        await MainActor.run {
+            vm.input = "/new"
+            vm.send()
+        }
+
+        try await waitUntil("fresh explicit-agent session created") {
+            await MainActor.run { vm.sessionKey.hasPrefix("agent:alice:ios-") }
+        }
+        #expect(await transport.createdSessionKeys().first?.hasPrefix("agent:alice:ios-") == true)
+        #expect(await transport.createdParentSessionKeys() == ["agent:alice:main"])
+    }
+
     @Test func `send attempts request when cached health is stale false`() async throws {
         let (transport, vm) = await makeViewModel(
             historyResponses: [historyPayload()],
@@ -5323,7 +5361,7 @@ struct ChatViewModelTests {
             },
             historyResponseHook: { _, index, sentRunIds in
                 guard let runId = sentRunIds.last else { return nil }
-                if (1 ... 3).contains(index) {
+                if (1...3).contains(index) {
                     let sessionId = switch index {
                     case 1: "sess-main-send-refresh"
                     case 2: "sess-main-stale-fallback"

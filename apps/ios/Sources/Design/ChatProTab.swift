@@ -132,7 +132,7 @@ struct ChatProTab: View {
     }
 
     private func syncChatViewModel() {
-        let sessionKey = self.scopedChatSessionKey
+        let sessionKey = self.appModel.chatSessionKey
         let transportModeID = self.appModel.chatTransportModeID
         let agentID = self.activeAgentID
         guard let viewModel else {
@@ -186,17 +186,6 @@ struct ChatProTab: View {
     private var activeAgentID: String {
         self.normalized(self.appModel.chatAgentId)
             ?? "main"
-    }
-
-    private var scopedChatSessionKey: String {
-        let sessionKey = self.appModel.chatSessionKey
-        guard sessionKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "global",
-              let selectedAgentID = self.normalized(self.appModel.selectedAgentId),
-              selectedAgentID != self.normalized(self.appModel.gatewayDefaultAgentId)
-        else {
-            return sessionKey
-        }
-        return SessionKey.makeAgentSessionKey(agentId: selectedAgentID, baseKey: "global")
     }
 
     @ViewBuilder

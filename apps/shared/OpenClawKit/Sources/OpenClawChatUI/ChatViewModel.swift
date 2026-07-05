@@ -2133,6 +2133,7 @@ public final class OpenClawChatViewModel {
     private func generatedNewSessionKey() -> String {
         let baseKey = "ios-\(UUID().uuidString.lowercased())"
         guard let agentID = Self.agentID(fromSessionKey: sessionKey) ??
+            self.activeAgentId ??
             Self.agentID(fromSessionKey: resolvedMainSessionKey) ??
             sessions.lazy.compactMap({ Self.agentID(fromSessionKey: $0.key) }).first
         else {
