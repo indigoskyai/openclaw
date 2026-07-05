@@ -1203,6 +1203,14 @@ export const hi: TranslationMap = {
       byType: "प्रकार के अनुसार",
       tokensTitle: "दैनिक टोकन उपयोग",
       costTitle: "दैनिक लागत",
+      compressedScaleHint: "Square-root scale keeps low-usage days visible.",
+    },
+    costWindows: {
+      title: "Cost Windows",
+      subtitle: "Calendar windows ending {date}",
+      selectedRange: "Selected Range",
+      lastDays: "Last {count} days",
+      perDay: "/ day",
     },
     breakdown: {
       output: "आउटपुट",
@@ -1248,6 +1256,7 @@ export const hi: TranslationMap = {
       cached: "कैश्ड",
       prompt: "प्रॉम्प्ट",
       calls: "कॉल",
+      costShare: "{percent}% of cost",
       topModels: "शीर्ष मॉडल",
       topProviders: "शीर्ष प्रदाता",
       topTools: "शीर्ष टूल",

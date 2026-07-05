@@ -1216,6 +1216,14 @@ export const de: TranslationMap = {
       byType: "Nach Typ",
       tokensTitle: "Tägliche Token-Nutzung",
       costTitle: "Tägliche Kosten",
+      compressedScaleHint: "Square-root scale keeps low-usage days visible.",
+    },
+    costWindows: {
+      title: "Cost Windows",
+      subtitle: "Calendar windows ending {date}",
+      selectedRange: "Selected Range",
+      lastDays: "Last {count} days",
+      perDay: "/ day",
     },
     breakdown: {
       output: "Ausgabe",
@@ -1262,6 +1270,7 @@ export const de: TranslationMap = {
       cached: "zwischengespeichert",
       prompt: "Prompt",
       calls: "Aufrufe",
+      costShare: "{percent}% of cost",
       topModels: "Top-Modelle",
       topProviders: "Top-Anbieter",
       topTools: "Top-Tools",
