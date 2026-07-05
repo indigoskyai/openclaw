@@ -1,8 +1,8 @@
 package ai.openclaw.app.chat
 
-import ai.openclaw.app.resolveAgentIdFromMainSessionKey
 import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.gateway.parseChatSendAck
+import ai.openclaw.app.resolveAgentIdFromMainSessionKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -50,6 +52,7 @@ class ChatController internal constructor(
   )
 
   private var appliedMainSessionKey = "main"
+  private val cacheMutationMutex = Mutex()
   private val _sessionKey = MutableStateFlow("main")
   val sessionKey: StateFlow<String> = _sessionKey.asStateFlow()
 
@@ -135,6 +138,12 @@ class ChatController internal constructor(
       )
       _sessions.value = emptyList()
     }
+  }
+
+  /** Purges the cache after all old-scope writes finish and before new-scope writes can start. */
+  internal suspend fun clearTranscriptCache() {
+    val cache = transcriptCache ?: return
+    cacheMutationMutex.withLock { cache.clearAll() }
   }
 
   /** Loads a chat session, normalizing "main" to the current gateway-provided main session key. */
@@ -287,8 +296,7 @@ class ChatController internal constructor(
     return key
   }
 
-  private fun resolveAgentIdForSessionKey(parentKey: String): String =
-    resolveAgentIdFromMainSessionKey(parentKey) ?: "main"
+  private fun resolveAgentIdForSessionKey(parentKey: String): String = resolveAgentIdFromMainSessionKey(parentKey) ?: "main"
 
   /** Queues a chat send without waiting for gateway acceptance. */
   fun sendMessage(
@@ -617,17 +625,24 @@ class ChatController internal constructor(
     messages: List<ChatMessage>,
   ) {
     val cache = transcriptCache ?: return
-    val gatewayId = requestCacheScope?.gatewayId ?: return
-    runCatching { cache.saveTranscript(gatewayId, sessionKey, messages) }
+    val capturedScope = requestCacheScope ?: return
+    cacheMutationMutex.withLock {
+      if (capturedScope != currentCacheScope()) return@withLock
+      runCatching { cache.saveTranscript(capturedScope.gatewayId, sessionKey, messages) }
+    }
   }
 
   private suspend fun persistSessions(
     requestCacheScope: ChatCacheScope?,
     sessions: List<ChatSessionEntry>,
+    retainedSessionKey: String?,
   ) {
     val cache = transcriptCache ?: return
-    val gatewayId = requestCacheScope?.gatewayId ?: return
-    runCatching { cache.saveSessions(gatewayId, sessions) }
+    val capturedScope = requestCacheScope ?: return
+    cacheMutationMutex.withLock {
+      if (capturedScope != currentCacheScope()) return@withLock
+      runCatching { cache.saveSessions(capturedScope.gatewayId, sessions, retainedSessionKey) }
+    }
   }
 
   private suspend fun fetchSessions(limit: Int?) {
@@ -640,15 +655,19 @@ class ChatController internal constructor(
           if (limit != null && limit > 0) put("limit", JsonPrimitive(limit))
         }
       val res = requestGateway("sessions.list", params.toString())
-      val sessions = parseSessions(res)
-      val applied =
+      val result = parseSessions(res)
+      val retainedSessionKey =
         synchronized(gatewayScopeApplyLock) {
-          if (requestCacheScope != currentCacheScope()) return@synchronized false
-          _sessions.value = sessions
-          true
+          if (requestCacheScope != currentCacheScope()) return
+          _sessions.value = result.sessions
+          val activeSessionKey = _sessionKey.value
+          val activeOutsideLocalWindow =
+            result.sessions
+              .drop(MAX_CACHED_SESSIONS)
+              .any { session -> session.key == activeSessionKey }
+          activeSessionKey.takeIf { result.isTruncated || activeOutsideLocalWindow }
         }
-      if (!applied) return
-      persistSessions(requestCacheScope, sessions)
+      persistSessions(requestCacheScope, result.sessions, retainedSessionKey)
     } catch (_: Throwable) {
       // best-effort
     }
@@ -971,10 +990,25 @@ class ChatController internal constructor(
     return ChatInFlightRun(runId = runId, text = obj["text"].asStringOrNull().orEmpty())
   }
 
-  private fun parseSessions(jsonString: String): List<ChatSessionEntry> {
-    val root = json.parseToJsonElement(jsonString).asObjectOrNull() ?: return emptyList()
-    val sessions = root["sessions"].asArrayOrNull() ?: return emptyList()
-    return sessions.mapNotNull { item -> parseSessionEntry(item.asObjectOrNull()) }
+  private data class SessionListResult(
+    val sessions: List<ChatSessionEntry>,
+    val isTruncated: Boolean,
+  )
+
+  private fun parseSessions(jsonString: String): SessionListResult {
+    val root =
+      json.parseToJsonElement(jsonString).asObjectOrNull()
+        ?: return SessionListResult(emptyList(), isTruncated = false)
+    val sessions =
+      root["sessions"]
+        .asArrayOrNull()
+        ?.mapNotNull { item -> parseSessionEntry(item.asObjectOrNull()) }
+        .orEmpty()
+    val totalCount = root["totalCount"].asLongOrNull()
+    val isTruncated =
+      root["hasMore"].asBooleanOrNull() == true ||
+         (totalCount != null && totalCount > sessions.size)
+    return SessionListResult(sessions, isTruncated)
   }
 
   private fun parseSessionEntry(
@@ -1042,7 +1076,10 @@ class ChatController internal constructor(
     val cache = transcriptCache ?: return
     val requestCacheScope = currentCacheScope() ?: return
     scope.launch {
-      runCatching { cache.deleteSession(requestCacheScope.gatewayId, key) }
+      cacheMutationMutex.withLock {
+        if (requestCacheScope != currentCacheScope()) return@withLock
+        runCatching { cache.deleteSession(requestCacheScope.gatewayId, key) }
+      }
     }
   }
 
@@ -1124,8 +1161,14 @@ internal fun parseChatMessageContents(obj: JsonObject): List<ChatMessageContent>
   return emptyList()
 }
 
-private fun parseCreatedSessionKey(json: Json, sessionJson: String): String? {
-  val root = runCatching { json.parseToJsonElement(sessionJson).asObjectOrNull() }.getOrNull() ?: return null
+private fun parseCreatedSessionKey(
+  json: Json,
+  sessionJson: String,
+): String? {
+  val root =
+    runCatching { json.parseToJsonElement(sessionJson).asObjectOrNull() }.getOrNull()
+      ?: return null
+
   fun clean(value: String?): String? = value?.trim()?.takeIf { it.isNotEmpty() }
   return clean(root["key"].asStringOrNull())
     ?: clean(root["sessionKey"].asStringOrNull())
