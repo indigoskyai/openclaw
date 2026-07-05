@@ -199,9 +199,9 @@ public final class OpenClawChatViewModel {
         self.onThinkingLevelChanged = onThinkingLevelChanged
         self.diagnosticsLog = diagnosticsLog
 
-        self.eventTask = Task { [weak self] in
-            guard let self else { return }
-            let stream = self.transport.events()
+        let transport = self.transport
+        self.eventTask = Task { [weak self, transport] in
+            let stream = transport.events()
             for await evt in stream {
                 if Task.isCancelled { return }
                 await MainActor.run { [weak self] in
@@ -500,7 +500,8 @@ public final class OpenClawChatViewModel {
         syncThinkingOptions: Bool = false) -> Bool
     {
         guard self.canApplyHistory(request) else { return false }
-        let incoming = Self.decodeMessages(payload.messages ?? [])
+        let incoming = self.adoptingProvisionalFinalMessageIDs(
+            in: Self.decodeMessages(payload.messages ?? []))
         let unmatchedProvisionalFinalIDs = Set(self.provisionalFinalMessagesMissing(from: incoming).map(\.id))
         var retainedMessageIDs = unmatchedProvisionalFinalIDs
         if request.historyMutationGeneration != self.historyMutationGeneration {
@@ -560,8 +561,11 @@ public final class OpenClawChatViewModel {
         let incomingRunIds = Set(incoming.compactMap { Self.normalizedIdempotencyKey($0.idempotencyKey) })
         return self.messages.filter { message in
             guard let provisional = provisionalFinalMessagesByID[message.id] else { return false }
-            if let runId = provisional.runId {
-                return !incomingRunIds.contains(runId)
+            if let runId = provisional.runId, incomingRunIds.contains(runId) {
+                return false
+            }
+            guard Self.containsUserTurn(provisional.scope.latestUserTurn, in: incoming) else {
+                return true
             }
             let searchRange = Self.messageRange(after: provisional.scope.latestUserTurn, in: incoming)
             return !incoming[searchRange].contains { incomingMessage in
@@ -1867,6 +1871,9 @@ public final class OpenClawChatViewModel {
         let scope = self.runMessageScope(for: runId)
         guard self.isCurrentSession(scope.session) else { return }
         guard let reconciliationKey = Self.finalMessageReconciliationKey(for: message) else { return }
+        if let runId, self.hasRecordedFinalMessage(runId: runId) {
+            return
+        }
 
         if self.hasCanonicalFinalMessageMatching(message, scope: scope) {
             if let runId {

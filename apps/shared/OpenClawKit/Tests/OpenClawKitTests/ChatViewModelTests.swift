@@ -395,6 +395,19 @@ private actor SessionSubscribeGate {
     }
 }
 
+private final class WeakReference<Value: AnyObject> {
+    weak var value: Value?
+
+    init(_ value: Value) {
+        self.value = value
+    }
+}
+
+private func weakReference<Value: AnyObject>(to value: Value?) throws -> WeakReference<Value> {
+    let value = try #require(value)
+    return WeakReference(value)
+}
+
 private actor TestChatTransportState {
     var historyCallCount: Int = 0
     var sessionsCallCount: Int = 0
@@ -778,6 +791,24 @@ extension TestChatTransportState {
 
 @Suite(.serialized)
 struct ChatViewModelTests {
+    @Test @MainActor func `event listener does not retain discarded view model`() async throws {
+        let transport = TestChatTransport(historyResponses: [historyPayload()])
+        var viewModel: OpenClawChatViewModel? = OpenClawChatViewModel(
+            sessionKey: "main",
+            transport: transport)
+        transport.emit(.health(ok: true))
+        for _ in 0..<100 where viewModel?.healthOK != true {
+            await Task.yield()
+        }
+        #expect(viewModel?.healthOK == true)
+        let discardedViewModel = try weakReference(to: viewModel)
+
+        viewModel = nil
+        await Task.yield()
+
+        #expect(discardedViewModel.value == nil)
+    }
+
     @Test func `decodes in-flight run from chat history`() throws {
         let data = #"{"sessionKey":"main","messages":[],"inFlightRun":{"runId":"run-active","text":"partial"}}"#
             .data(using: .utf8)!
@@ -864,6 +895,46 @@ struct ChatViewModelTests {
         try await waitUntil("foreground snapshot applied") {
             await MainActor.run {
                 vm.pendingRunCount == 1 && vm.streamingAssistantText == "resumed partial"
+            }
+        }
+    }
+
+    @Test func `active history retains repeated optimistic user when new row is absent`() async throws {
+        let now = Date().timeIntervalSince1970 * 1000
+        let olderUser = chatTextMessage(
+            role: "user",
+            text: "repeat request",
+            timestamp: now - 10_000,
+            idempotencyKey: "older:prompt")
+        let olderAssistant = chatTextMessage(
+            role: "assistant",
+            text: "older reply",
+            timestamp: now - 9_000,
+            idempotencyKey: "older:assistant")
+        let existingHistory = historyPayload(messages: [olderUser, olderAssistant])
+        let (_, vm) = await makeViewModel(
+            historyResponses: [existingHistory],
+            historyResponseHook: { _, index, sentRunIds in
+                guard index > 0, let runId = sentRunIds.last else { return nil }
+                return historyPayload(
+                    messages: [olderUser, olderAssistant],
+                    inFlightRun: OpenClawChatInFlightRun(runId: runId, text: "working"))
+            },
+            sendMessageStatus: "pending")
+        try await loadAndWaitBootstrap(vm: vm)
+
+        await sendUserMessage(vm, text: "repeat request")
+        let optimisticID = try await MainActor.run {
+            try #require(vm.messages.last(where: { $0.role == "user" })?.id)
+        }
+
+        try await waitUntil("repeated optimistic user survives incomplete active history") {
+            await MainActor.run {
+                vm.pendingRunCount == 1 &&
+                    vm.messages.count(where: {
+                        $0.role == "user" && $0.content.first?.text == "repeat request"
+                    }) == 2 &&
+                    vm.messages.contains(where: { $0.id == optimisticID })
             }
         }
     }
@@ -1705,6 +1776,148 @@ struct ChatViewModelTests {
                         message.role == "assistant" &&
                             message.content.contains { $0.text == "reply from final event" }
                     }
+            }
+        }
+    }
+
+    @Test func `duplicate final events append one provisional reply`() async throws {
+        let sessionId = "sess-main"
+        let history = historyPayload(sessionId: sessionId)
+        let (transport, vm) = await makeViewModel(
+            historyResponses: [history, history],
+            sendMessageStatus: "pending")
+        try await loadAndWaitBootstrap(vm: vm, sessionId: sessionId)
+        await sendUserMessage(vm, text: "hello")
+        let runId = try await waitForLastSentRunId(transport)
+        let final = OpenClawChatEventPayload(
+            runId: runId,
+            sessionKey: "main",
+            state: "final",
+            message: chatTextMessage(
+                role: "assistant",
+                text: "one reply",
+                timestamp: Date().timeIntervalSince1970 * 1000),
+            errorMessage: nil)
+
+        transport.emit(.chat(final))
+        transport.emit(.chat(final))
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(await MainActor.run {
+            vm.messages.count(where: { message in
+                message.role == "assistant" && message.content.first?.text == "one reply"
+            }) == 1
+        })
+    }
+
+    @Test func `provider canonical history adopts provisional final reply`() async throws {
+        let sessionId = "sess-main"
+        let now = Date().timeIntervalSince1970 * 1000
+        let (transport, vm) = await makeViewModel(
+            historyResponses: [historyPayload(sessionId: sessionId)],
+            historyResponseHook: { _, index, sentRunIds in
+                guard index > 0, let runId = sentRunIds.last else { return nil }
+                if index == 1 {
+                    return historyPayload(
+                        sessionId: sessionId,
+                        messages: [
+                            chatTextMessage(
+                                role: "user",
+                                text: "provider-bound request",
+                                timestamp: now + 1,
+                                idempotencyKey: "\(runId):user"),
+                        ],
+                        inFlightRun: OpenClawChatInFlightRun(runId: runId, text: "working"))
+                }
+                return historyPayload(
+                    sessionId: sessionId,
+                    messages: [
+                        chatTextMessage(
+                            role: "user",
+                            text: "provider-bound request",
+                            timestamp: now + 1,
+                            idempotencyKey: "\(runId):user"),
+                        chatTextMessage(
+                            role: "assistant",
+                            text: "provider-bound reply",
+                            timestamp: now + 2,
+                            idempotencyKey: "provider-session:assistant"),
+                    ])
+            },
+            sendMessageStatus: "pending")
+        try await loadAndWaitBootstrap(vm: vm, sessionId: sessionId)
+        await sendUserMessage(vm, text: "provider-bound request")
+        let runId = try await waitForLastSentRunId(transport)
+
+        transport.emit(
+            .chat(
+                OpenClawChatEventPayload(
+                    runId: runId,
+                    sessionKey: "main",
+                    state: "final",
+                    message: chatTextMessage(
+                        role: "assistant",
+                        text: "provider-bound reply",
+                        timestamp: now),
+                    errorMessage: nil)))
+
+        try await waitUntil("provider canonical history replaces provisional reply") {
+            await MainActor.run {
+                vm.pendingRunCount == 0 &&
+                    vm.messages.count(where: { message in
+                        message.role == "assistant" && message.content.first?.text == "provider-bound reply"
+                    }) == 1 &&
+                    vm.messages.contains(where: { $0.idempotencyKey == "provider-session:assistant" })
+            }
+        }
+    }
+
+    @Test func `incomplete history cannot adopt older identical reply as provisional final`() async throws {
+        let sessionId = "sess-main"
+        let now = Date().timeIntervalSince1970 * 1000
+        let olderHistory = historyPayload(
+            sessionId: sessionId,
+            messages: [
+                chatTextMessage(
+                    role: "user",
+                    text: "older request",
+                    timestamp: now - 2000,
+                    idempotencyKey: "older:user"),
+                chatTextMessage(
+                    role: "assistant",
+                    text: "same reply",
+                    timestamp: now - 1000,
+                    idempotencyKey: "older:assistant"),
+            ])
+        let (transport, vm) = await makeViewModel(
+            historyResponses: [olderHistory],
+            historyResponseHook: { _, index, _ in index > 0 ? olderHistory : nil },
+            sendMessageStatus: "pending")
+        try await loadAndWaitBootstrap(vm: vm, sessionId: sessionId)
+        await sendUserMessage(vm, text: "current request")
+        let runId = try await waitForLastSentRunId(transport)
+
+        transport.emit(
+            .chat(
+                OpenClawChatEventPayload(
+                    runId: runId,
+                    sessionKey: "main",
+                    state: "final",
+                    message: chatTextMessage(
+                        role: "assistant",
+                        text: "same reply",
+                        timestamp: now),
+                    errorMessage: nil)))
+
+        try await waitUntil("incomplete history retains the current turn and provisional final") {
+            await MainActor.run {
+                vm.pendingRunCount == 0 &&
+                    vm.messages.count(where: {
+                        $0.role == "assistant" && $0.content.first?.text == "same reply"
+                    }) == 2 &&
+                    vm.messages.contains(where: {
+                        $0.role == "user" && $0.content.first?.text == "current request"
+                    })
             }
         }
     }
